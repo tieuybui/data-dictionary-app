@@ -19,10 +19,12 @@ def check_password():
     st.set_page_config(page_title="Login", page_icon="🔒")
     st.title("🔒 Data Dictionary")
 
-    user = st.text_input("Username")
-    pw = st.text_input("Password", type="password")
+    with st.form("login_form"):
+        user = st.text_input("Username")
+        pw = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
 
-    if st.button("Login"):
+    if submitted:
         if (
             hmac.compare_digest(user, st.secrets["username"])
             and hmac.compare_digest(pw, st.secrets["password"])
