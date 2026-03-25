@@ -1457,14 +1457,12 @@ with st.sidebar:
         else:
             new_key = st.text_input(
                 "Groq API Key",
-                type="password",
                 placeholder="gsk_...",
                 help="Free key: https://console.groq.com/keys",
             )
             if new_key:
                 _save_groq_key(new_key)
-                st.success("API key saved!")
-                st.rerun()
+                st.success("API key saved! Reload page to apply.")
 
 
 
