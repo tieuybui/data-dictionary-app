@@ -3,7 +3,11 @@ Data Dictionary App — User Guide
 """
 
 import streamlit as st
-from auth import check_password
+from streamlit_local_storage import LocalStorage
+from auth import check_password, restore_auth
+
+_ls = LocalStorage()
+restore_auth(_ls)
 check_password()
 
 st.set_page_config(page_title="Guide", page_icon="📚", layout="wide")

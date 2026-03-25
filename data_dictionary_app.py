@@ -16,10 +16,11 @@ from datetime import datetime
 from pathlib import Path
 from sqlalchemy import create_engine, text
 from streamlit_local_storage import LocalStorage
-from auth import check_password
-check_password()
+from auth import check_password, restore_auth
 
 ls = LocalStorage()
+restore_auth(ls)
+check_password()
 
 # Auto-detect ODBC driver: prefer 18 (local), fallback to 17 (Streamlit Cloud)
 _ODBC_DRIVER = None
@@ -995,19 +996,18 @@ def _clear_overrides():
 # Set env var: GROQ_API_KEY=your_key
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_KEY_FILE = Path(__file__).parent / ".groq_api_key"
+_GROQ_LS_KEY = "dd_groq_api_key"
 
 
 def _load_groq_key() -> str:
-    """Load Groq API key from local file."""
-    if GROQ_KEY_FILE.exists():
-        return GROQ_KEY_FILE.read_text(encoding="utf-8").strip()
-    return ""
+    """Load Groq API key from browser LocalStorage."""
+    val = ls.getItem(_GROQ_LS_KEY)
+    return val.strip() if val else ""
 
 
 def _save_groq_key(key: str):
-    """Save Groq API key to local file."""
-    GROQ_KEY_FILE.write_text(key.strip(), encoding="utf-8")
+    """Save Groq API key to browser LocalStorage."""
+    ls.setItem(_GROQ_LS_KEY, key.strip())
 
 
 def _call_ai(prompt: str, max_tokens: int = 2000) -> str:
