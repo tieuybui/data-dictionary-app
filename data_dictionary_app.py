@@ -1001,13 +1001,24 @@ _GROQ_LS_KEY = "dd_groq_api_key"
 
 def _load_groq_key() -> str:
     """Load Groq API key from browser LocalStorage."""
+    if "_groq_key" in st.session_state:
+        return st.session_state["_groq_key"]
     val = ls.getItem(_GROQ_LS_KEY)
-    return val.strip() if val else ""
+    if val:
+        st.session_state["_groq_key"] = val.strip()
+        return st.session_state["_groq_key"]
+    # First render after reload: LocalStorage not ready yet, trigger rerun once
+    if "_ls_loaded" not in st.session_state:
+        st.session_state["_ls_loaded"] = True
+        st.rerun()
+    return ""
 
 
 def _save_groq_key(key: str):
     """Save Groq API key to browser LocalStorage."""
-    ls.setItem(_GROQ_LS_KEY, key.strip())
+    key = key.strip()
+    ls.setItem(_GROQ_LS_KEY, key)
+    st.session_state["_groq_key"] = key
 
 
 def _call_ai(prompt: str, max_tokens: int = 2000) -> str:
