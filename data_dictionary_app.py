@@ -184,7 +184,7 @@ LAYER_PREFIXES = {
     "slv": "slv", "gld": "gld", "ref": "ref",
     "dq": "dq", "dd": "dd", "utl": "utl",
 }
-EXCLUDE_PREFIXES = ["dd_", "br2"]
+EXCLUDE_PREFIXES = ["dd_", "brz2"]
 
 LAYER_COLORS = {
     "brz": "#fbbf24", "slv": "#7dd3fc", "gld": "#fde047",
