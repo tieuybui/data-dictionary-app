@@ -1015,10 +1015,6 @@ def _load_groq_key() -> str:
     if val:
         st.session_state["_groq_key"] = val.strip()
         return st.session_state["_groq_key"]
-    # First render after reload: LocalStorage not ready yet, trigger rerun once
-    if "_ls_loaded" not in st.session_state:
-        st.session_state["_ls_loaded"] = True
-        st.rerun()
     return ""
 
 
