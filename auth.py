@@ -76,4 +76,6 @@ def logout():
     """Clear auth state and LocalStorage."""
     st.session_state.pop("authenticated", None)
     st.session_state.pop("username", None)
-    _ls.deleteItem(_LS_KEY)
+    # Overwrite with empty string to invalidate token
+    # (deleteItem fails because server-side dict resets on rerun)
+    _ls.setItem(_LS_KEY, "")
