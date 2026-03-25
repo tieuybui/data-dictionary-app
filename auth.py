@@ -19,19 +19,15 @@ def check_password():
     st.set_page_config(page_title="Login", page_icon="🔒")
 
     st.title("🔒 Data Dictionary")
-    email = st.text_input("Email", placeholder="you@example.com")
-    pw = st.text_input("Password", type="password")
+    st.text_input("Email", placeholder="you@example.com", key="_email_input")
+    st.text_input("Password", type="password", key="_pw_input")
 
     if st.button("Login"):
-        email = email.strip().lower()
+        email = st.session_state.get("_email_input", "").strip().lower()
+        pw = st.session_state.get("_pw_input", "")
         # Normalize keys to lowercase for case-insensitive email match
         users = {str(k).lower(): str(v) for k, v in st.secrets["users"].items()}
         expected_pw = users.get(email, "")
-
-        # Debug: show parsed keys (remove after testing)
-        st.write("Parsed users keys:", list(users.keys()))
-        st.write("Input email:", repr(email))
-        st.write("Match found:", repr(expected_pw))
 
         if expected_pw and hmac.compare_digest(pw, expected_pw):
             st.session_state["authenticated"] = True
