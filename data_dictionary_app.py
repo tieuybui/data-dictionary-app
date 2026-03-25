@@ -1144,14 +1144,7 @@ if "selected_table" not in st.session_state:
 # Sidebar
 # ════════════════════════════════════════
 with st.sidebar:
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("📖 Data Dictionary")
-    with col2:
-        st.caption(st.session_state.get("username", ""))
-        if st.button("Logout", type="secondary"):
-            logout()
-            st.rerun()
+    st.title("📖 Data Dictionary")
 
     # Environment selector
     env_options = list(ENV_CONFIGS.keys())
@@ -1441,6 +1434,16 @@ with st.sidebar:
         if new_key != saved_key:
             _save_groq_key(new_key)
             st.success("API key saved!")
+            st.rerun()
+
+    # User info & logout
+    st.divider()
+    username = st.session_state.get("username", "")
+    if username:
+        col_user, col_logout = st.columns([3, 1])
+        col_user.caption(f"👤 {username}")
+        if col_logout.button("↩", help="Logout"):
+            logout()
             st.rerun()
 
 
