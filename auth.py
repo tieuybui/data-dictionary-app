@@ -28,6 +28,10 @@ def check_password():
         return True
 
     if st.session_state.get("authenticated"):
+        # Save pending token to LocalStorage after login
+        if "_pending_token" in st.session_state:
+            _ls = LocalStorage()
+            _ls.setItem(_LS_KEY, st.session_state.pop("_pending_token"))
         return True
 
     # Try auto-login from LocalStorage
@@ -63,10 +67,11 @@ def check_password():
         if expected_pw and hmac.compare_digest(pw, expected_pw):
             st.session_state["authenticated"] = True
             st.session_state["username"] = email
-            LocalStorage().setItem(_LS_KEY, json.dumps({
+            # Queue token to be saved on next rerun (after authenticated)
+            st.session_state["_pending_token"] = json.dumps({
                 "user": email,
                 "token": _make_token(email, pw),
-            }))
+            })
             st.rerun()
         else:
             st.error("Invalid email or password.")
