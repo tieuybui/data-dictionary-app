@@ -843,39 +843,6 @@ def update_column_fields(table_name: str, column_name: str, fields: dict):
     )
 
 
-def batch_update_column_fields(updates: list[tuple[str, str, dict]]):
-    """Batch update multiple columns in a single transaction.
-    updates: list of (table_name, column_name, fields_dict)
-    """
-    if not updates:
-        return
-    if _is_fabric():
-        # Batch all overrides into a single file write
-        ov = _load_overrides()
-        now = datetime.now().isoformat()
-        for table_name, column_name, fields in updates:
-            key = f"{table_name}::{column_name}"
-            ov["columns"].setdefault(key, {"table_name": table_name, "column_name": column_name})
-            ov["columns"][key].update({k: v for k, v in fields.items() if v is not None})
-            ov["columns"][key]["updated_at"] = now
-        _save_overrides(ov)
-        return
-    now = datetime.now().isoformat()
-    with get_engine(st.session_state.env).connect() as conn:
-        for table_name, column_name, fields in updates:
-            fields = dict(fields)  # avoid mutating caller's dict
-            fields["updated_at"] = now
-            set_parts = ", ".join(f"{k} = :{k}" for k in fields)
-            fields["_table_name"] = table_name
-            fields["_column_name"] = column_name
-            conn.execute(
-                text(f"UPDATE dbo.dd_columns SET {set_parts} "
-                     f"WHERE table_name = :_table_name AND column_name = :_column_name"),
-                fields,
-            )
-        conn.commit()
-
-
 def export_json() -> str:
     tables = load_dd_tables()
     columns = load_dd_columns()
@@ -967,7 +934,12 @@ def _sql_escape(val: str) -> str:
 
 
 def _generate_fabric_code() -> str | None:
-    """Generate self-contained Python code for Fabric notebook."""
+    """Generate self-contained Python code for Fabric notebook.
+
+    Uses batch MERGE via Spark DataFrames + temp views instead of
+    one MERGE per row, so the generated code runs in 2 SQL statements
+    (1 for tables, 1 for columns) regardless of how many rows changed.
+    """
     ov = _load_overrides()
     if not ov["tables"] and not ov["columns"]:
         return None
@@ -979,49 +951,102 @@ def _generate_fabric_code() -> str | None:
         "# Auto-generated from Data Dictionary App",
         "# Paste into a Fabric notebook cell and run",
         "# ════════════════════════════════════════",
+        "import json",
+        "from pyspark.sql.types import StructType, StructField, StringType",
         "",
     ]
 
-    # Table updates via Spark SQL MERGE
+    # ── Table updates ──
     _skip_keys = {"updated_at", "_table_name", "_column_name"}
+    tbl_rows = []
+    tbl_update_fields = set()
     for tbl, fields in ov.get("tables", {}).items():
-        clean = {k: _sql_escape(v) for k, v in fields.items() if k not in _skip_keys and v}
+        clean = {k: v for k, v in fields.items() if k not in _skip_keys and v}
         if not clean:
             continue
+        clean["table_name"] = tbl
         clean["updated_at"] = now
-        set_parts = ", ".join(f"{k} = '{v}'" for k, v in clean.items())
-        safe_tbl = _sql_escape(tbl)
-        lines.append(f"spark.sql(\"\"\"")
-        lines.append(f"    MERGE INTO {db}.dd_tables AS t")
-        lines.append(f"    USING (SELECT '{safe_tbl}' AS table_name) AS s")
-        lines.append(f"    ON t.table_name = s.table_name")
-        lines.append(f"    WHEN MATCHED THEN UPDATE SET {set_parts}")
-        lines.append(f"\"\"\")")
-        lines.append(f"print('Updated table: {tbl}')")
+        tbl_rows.append(clean)
+        tbl_update_fields.update(k for k in clean if k != "table_name")
+
+    if tbl_rows:
+        # Ensure all rows have the same keys
+        all_tbl_keys = ["table_name"] + sorted(tbl_update_fields)
+        for row in tbl_rows:
+            for k in all_tbl_keys:
+                row.setdefault(k, None)
+
+        tbl_data_str = json.dumps([{k: r[k] for k in all_tbl_keys} for r in tbl_rows], default=str)
+        tbl_schema = "StructType([\n" + ",\n".join(
+            f"    StructField('{k}', StringType(), True)" for k in all_tbl_keys
+        ) + "\n])"
+        tbl_sets = ", ".join(f"target.{k} = source.{k}" for k in all_tbl_keys if k != "table_name")
+        tbl_cols = ", ".join(all_tbl_keys)
+        tbl_src_cols = ", ".join(f"source.{k}" for k in all_tbl_keys)
+
+        lines.append("# ── Table updates ──")
+        lines.append(f"tbl_data = json.loads('''{tbl_data_str}''')")
+        lines.append(f"tbl_schema = {tbl_schema}")
+        lines.append("tbl_df = spark.createDataFrame(tbl_data, schema=tbl_schema)")
+        lines.append("tbl_df.createOrReplaceTempView('_dd_edit_tables')")
+        lines.append(f'spark.sql("""')
+        lines.append(f"    MERGE INTO {db}.dd_tables AS target")
+        lines.append(f"    USING _dd_edit_tables AS source")
+        lines.append(f"    ON target.table_name = source.table_name")
+        lines.append(f"    WHEN MATCHED THEN UPDATE SET {tbl_sets}")
+        lines.append(f"    WHEN NOT MATCHED THEN INSERT ({tbl_cols}) VALUES ({tbl_src_cols})")
+        lines.append(f'""")')
+        lines.append(f"print(f'Updated {{len(tbl_data)}} table(s)')")
         lines.append("")
 
-    # Column updates via Spark SQL MERGE
+    # ── Column updates ──
+    col_rows = []
+    col_update_fields = set()
     for _, fields in ov.get("columns", {}).items():
         tbl = fields["table_name"]
         col = fields["column_name"]
-        clean = {k: _sql_escape(v) for k, v in fields.items()
+        clean = {k: v for k, v in fields.items()
                  if k not in ("table_name", "column_name", "updated_at", "_table_name", "_column_name") and v is not None}
         if not clean:
             continue
+        clean["table_name"] = tbl
+        clean["column_name"] = col
         clean["updated_at"] = now
-        set_parts = ", ".join(f"{k} = '{v}'" for k, v in clean.items())
-        safe_tbl = _sql_escape(tbl)
-        safe_col = _sql_escape(col)
-        lines.append(f"spark.sql(\"\"\"")
-        lines.append(f"    MERGE INTO {db}.dd_columns AS t")
-        lines.append(f"    USING (SELECT '{safe_tbl}' AS table_name, '{safe_col}' AS column_name) AS s")
-        lines.append(f"    ON t.table_name = s.table_name AND t.column_name = s.column_name")
-        lines.append(f"    WHEN MATCHED THEN UPDATE SET {set_parts}")
-        lines.append(f"\"\"\")")
-        lines.append(f"print('Updated column: {tbl}.{col}')")
+        col_rows.append(clean)
+        col_update_fields.update(k for k in clean if k not in ("table_name", "column_name"))
+
+    if col_rows:
+        all_col_keys = ["table_name", "column_name"] + sorted(col_update_fields)
+        for row in col_rows:
+            for k in all_col_keys:
+                row.setdefault(k, None)
+
+        col_data_str = json.dumps([{k: r[k] for k in all_col_keys} for r in col_rows], default=str)
+        col_schema = "StructType([\n" + ",\n".join(
+            f"    StructField('{k}', StringType(), True)" for k in all_col_keys
+        ) + "\n])"
+        col_sets = ", ".join(f"target.{k} = source.{k}" for k in all_col_keys if k not in ("table_name", "column_name"))
+        col_cols = ", ".join(all_col_keys)
+        col_src_cols = ", ".join(f"source.{k}" for k in all_col_keys)
+
+        lines.append("# ── Column updates ──")
+        lines.append(f"col_data = json.loads('''{col_data_str}''')")
+        lines.append(f"col_schema = {col_schema}")
+        lines.append("col_df = spark.createDataFrame(col_data, schema=col_schema)")
+        lines.append("col_df.createOrReplaceTempView('_dd_edit_columns')")
+        lines.append(f'spark.sql("""')
+        lines.append(f"    MERGE INTO {db}.dd_columns AS target")
+        lines.append(f"    USING _dd_edit_columns AS source")
+        lines.append(f"    ON target.table_name = source.table_name AND target.column_name = source.column_name")
+        lines.append(f"    WHEN MATCHED THEN UPDATE SET {col_sets}")
+        lines.append(f"    WHEN NOT MATCHED THEN INSERT ({col_cols}) VALUES ({col_src_cols})")
+        lines.append(f'""")')
+        lines.append(f"print(f'Updated {{len(col_data)}} column(s)')")
         lines.append("")
 
-    lines.append("print('Done!')")
+    tbl_count = len(tbl_rows)
+    col_count = len(col_rows)
+    lines.append(f"print('Done: {tbl_count} table(s), {col_count} column(s)')")
     return "\n".join(lines)
 
 
@@ -1697,7 +1722,7 @@ else:
         )
 
         if st.button("💾 Save Column Edits", type="primary"):
-            batch = []
+            changes = 0
             for idx in range(len(edited)):
                 orig_row = original_df.iloc[idx]
                 edit_row = edited.iloc[idx]
@@ -1720,14 +1745,14 @@ else:
                         elif str(ov or "") != str(ev or ""):
                             updates[field] = ev
                 if updates:
-                    batch.append((selected, col_name, updates))
+                    update_column_fields(selected, col_name, updates)
+                    changes += 1
 
-            if batch:
-                batch_update_column_fields(batch)
+            if changes:
                 if _is_fabric():
-                    st.success(f"Queued {len(batch)} column(s)! Check sidebar for generated code.")
+                    st.success(f"Queued {changes} column(s)! Check sidebar for generated code.")
                 else:
-                    st.success(f"Saved {len(batch)} column(s)!")
+                    st.success(f"Saved {changes} column(s)!")
                 st.rerun()
             else:
                 st.info("No changes detected.")
